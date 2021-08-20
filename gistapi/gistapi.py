@@ -9,9 +9,10 @@ endpoint to verify the server is up and responding and a search endpoint
 providing a search across all public Gists for a given Github account.
 """
 
+import re
 import requests
-from flask import Flask, jsonify, request
-
+from flask import Flask, abort, jsonify, request
+from marshmallow import Schema, fields, ValidationError
 
 # *The* app object
 app = Flask(__name__)
@@ -23,9 +24,15 @@ def ping():
     return "pong"
 
 
-def gists_for_user(username):
-    """Provides the list of gist metadata for a given user.
+@app.errorhandler(404)
+def resource_not_found(e):
+    """ Handles all Resource not found errors thrown within the application """
+    return jsonify(message=str(e.description)), 404
 
+
+def gists_for_user(username):
+    """
+    Provides the list of gist metadata for a given user.
     This abstracts the /users/:username/gist endpoint from the Github API.
     See https://developer.github.com/v3/gists/#list-a-users-gists for
     more information.
@@ -37,18 +44,35 @@ def gists_for_user(username):
         The dict parsed from the json response from the Github API.  See
         the above URL for details of the expected structure.
     """
-    gists_url = 'https://api.github.com/users/{username}/gists'.format(
-            username=username)
-    response = requests.get(gists_url)
-    # BONUS: What failures could happen?
-    # BONUS: Paging? How does this work for users with tons of gists?
+    per_page = 100
+    page = 1
+    gists_url = f'https://api.github.com/users/{username}/gists?per_page={per_page}&page='
+    result = []
+    while True:
+        response = requests.get(gists_url+str(page))
+        if response.status_code == 404:
+            abort(404, description="No user found")
+        elif response.json():
+            page +=1
+            result.extend(response.json())
+        else:
+            print('Total records', len(result))
+            break
+    return result
 
-    return response.json()
+
+class PayloadSchema(Schema):
+    """
+    Input payload schema for validation
+    """
+    username = fields.String(required=True, allow_blank=False, allow_none=False)
+    pattern = fields.String(required=True, allow_blank=False, allow_none=False)
 
 
 @app.route("/api/v1/search", methods=['POST'])
 def search():
-    """Provides matches for a single pattern across a single users gists.
+    """
+    Provides matches for a single pattern across a single users gists.
 
     Pulls down a list of all gists for a given user and then searches
     each gist for a given regular expression.
@@ -59,27 +83,43 @@ def search():
         indicating any failure conditions.
     """
     post_data = request.get_json()
-    # BONUS: Validate the arguments?
+    schema = PayloadSchema()
+    
+    # Validate post payload
+    try:
+        post_data = schema.load(post_data)
+    except ValidationError as v_err:
+        return jsonify(v_err.messages), 400
 
     username = post_data['username']
     pattern = post_data['pattern']
 
-    result = {}
     gists = gists_for_user(username)
-    # BONUS: Handle invalid users?
+    if not gists:
+        abort(404, description=f"No Gists found for username - {username}")
+    
+    result = {'username': username, 'pattern': pattern}
+    matches = []
+    try:
+        for gist in gists:
+            # iterate over each files and check if pattern exists in raw file
+            for file_name, content in gist.get('files', {}).items():
+                r = requests.get(content['raw_url'], stream=True)
+                for each_chunk in r.iter_content(chunk_size=1024):
+                    if re.search(pattern.encode('utf-8'), each_chunk):
+                        matches.append("/".join(["https://gist.github.com", username,gist['id']]))
+                        # breaking even if one match exists in the file
+                        break
 
-    for gist in gists:
-        # REQUIRED: Fetch each gist and check for the pattern
-        # BONUS: What about huge gists?
-        # BONUS: Can we cache results in a datastore/db?
-        pass
-
-    result['status'] = 'success'
-    result['username'] = username
-    result['pattern'] = pattern
-    result['matches'] = []
-
-    return jsonify(result)
+        result['status'] = 'success'
+        result['matches'] = matches
+        status_code = 200
+    except Exception as e:
+        result['status'] = 'failure'
+        result['message'] = 'Internal server error'
+        print(e)
+        status_code = 500
+    return jsonify(result), status_code
 
 
 if __name__ == '__main__':
