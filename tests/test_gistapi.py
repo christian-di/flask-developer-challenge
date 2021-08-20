@@ -54,6 +54,7 @@ def test_invalid_user_name(client):
                      data=json.dumps(post_data),
                      headers={'content-type':'application/json'})
     result_dict = json.loads(rv.data.decode('utf-8'))
-    expected_dict = {"message": "No user found"} 
+    expected_dict = {'status': 'failure', 
+                     'message': 'No user found'} 
     assert result_dict == expected_dict
 

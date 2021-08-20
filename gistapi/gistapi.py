@@ -27,7 +27,7 @@ def ping():
 @app.errorhandler(404)
 def resource_not_found(e):
     """ Handles all Resource not found errors thrown within the application """
-    return jsonify(message=str(e.description)), 404
+    return jsonify(status='failure',message=str(e.description)), 404
 
 
 def gists_for_user(username):
