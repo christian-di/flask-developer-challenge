@@ -11,7 +11,9 @@ providing a search across all public Gists for a given Github account.
 
 import requests
 from flask import Flask, jsonify, request
+import re
 
+from gistapi.models.gist import Gist
 
 # *The* app object
 app = Flask(__name__)
@@ -22,7 +24,8 @@ def ping():
     """Provide a static response to a simple GET request."""
     return "pong"
 
-
+# Comment by Matthias: This should be moved into an object
+# that represents a Github user
 def gists_for_user(username):
     """Provides the list of gist metadata for a given user.
 
@@ -41,10 +44,14 @@ def gists_for_user(username):
             username=username)
     response = requests.get(gists_url)
     # BONUS: What failures could happen?
+    #  - github.com not reachable (quite unlikely, but not impossible)
+    #  - username non existent
     # BONUS: Paging? How does this work for users with tons of gists?
+    #  - see models/gists.py def gist_files_generator, I don't want to copy the code, so left out
+    #        clean solution would be a helper function that handles truncation in general, like for a general URL,
+    #        maybe as another generator
 
     return response.json()
-
 
 @app.route("/api/v1/search", methods=['POST'])
 def search():
@@ -59,25 +66,40 @@ def search():
         indicating any failure conditions.
     """
     post_data = request.get_json()
-    # BONUS: Validate the arguments?
+    # ✓ BONUS: Validate the arguments?
+    if "username" not in post_data:
+        return 'username missing', 422
+    if "pattern" not in post_data:
+        return 'search pattern missing', 422
 
     username = post_data['username']
     pattern = post_data['pattern']
+    re_pattern = re.compile(pattern)
 
     result = {}
+    result['matches'] = []
     gists = gists_for_user(username)
-    # BONUS: Handle invalid users?
 
-    for gist in gists:
-        # REQUIRED: Fetch each gist and check for the pattern
-        # BONUS: What about huge gists?
+    # ✓ BONUS: Handle invalid users?
+    if 'message' in gists and gists['message'] == "Not Found":
+        return "Username unknown to Github", 400
+
+    for gist_json in gists:
+        gist_object = Gist(gist_json)
+        if gist_object.search_all_gist_files_for_pattern(re_pattern):
+            result['matches'].append(gist_object.url())
+        # ✓ REQUIRED: Fetch each gist and check for the pattern
+        # ✓ BONUS: What about huge gists?
+        #    - see models/gist.py def gist_files_generator
         # BONUS: Can we cache results in a datastore/db?
-        pass
+        # Not worked on, steps required theoretically: 
+        #    - build a serialiser for class Gist
+        #    - build method to check if online version has been updated since date of caching
+        #    - search through cache instead of downloaded content
 
     result['status'] = 'success'
     result['username'] = username
     result['pattern'] = pattern
-    result['matches'] = []
 
     return jsonify(result)
 
