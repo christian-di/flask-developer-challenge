@@ -10,12 +10,19 @@ providing a search across all public Gists for a given Github account.
 """
 
 import requests
+import json
+import requests_cache
+import re
+
 from flask import Flask, jsonify, request
+from concurrent.futures import as_completed
+from requests_futures.sessions import FuturesSession
 
 
 # *The* app object
 app = Flask(__name__)
 
+requests_cache.install_cache('github_cache', backend='sqlite', expire_after=180)
 
 @app.route("/ping")
 def ping():
@@ -41,10 +48,30 @@ def gists_for_user(username):
             username=username)
     response = requests.get(gists_url)
     # BONUS: What failures could happen?
+    # User account might not exist
     # BONUS: Paging? How does this work for users with tons of gists?
+    # Paging helps to prevent loading tons of data into the system memory, 
+    # which can result into delayed loading time or even timeouts.
+    # The CPU is also stressed at the same time.
+    # With paging, a few items are retrieved per page and more can be obtained
+    # by accessing more pages. This ensures that lesser memory and CPU are used 
+    # when retriving data
 
     return response.json()
 
+def is_user_valid(username):
+    """"Checks to see if the provided GitHub user exists.
+    Args:
+        username (string): the user to be discovered
+
+    Returns:
+        boolen indicating whether a username exsits or not. 
+    """
+    url = f"https://api.github.com/users/{username}"
+    res = requests.get(url.format(username))
+    user_exist= True if res.status_code == 200  else False
+
+    return user_exist
 
 @app.route("/api/v1/search", methods=['POST'])
 def search():
@@ -59,25 +86,49 @@ def search():
         indicating any failure conditions.
     """
     post_data = request.get_json()
-    # BONUS: Validate the arguments?
 
+    # BONUS: Validate the arguments?
     username = post_data['username']
-    pattern = post_data['pattern']
+    pattern  = post_data['pattern']
+    errors = []
+    errors.clear()
+    if not is_user_valid(username):
+        errors.append("invalid username")
+
+    try: 
+        re.compile(pattern)
+    except Exception: 
+        errors.append("invalid regex match pattern")
+    
+    if len(errors) > 0:
+        return jsonify({"message": "validation error(s)", "errors": errors}), 400
 
     result = {}
     gists = gists_for_user(username)
+   
     # BONUS: Handle invalid users?
+    _gists = []
+    futures = []
+    session = FuturesSession()
 
     for gist in gists:
-        # REQUIRED: Fetch each gist and check for the pattern
-        # BONUS: What about huge gists?
-        # BONUS: Can we cache results in a datastore/db?
-        pass
+        future = session.get(list(gist['files'].values())[0]['raw_url'])
+        
+        username = gist['owner']['login']
+        my_url = gist['html_url']
+        html_url = f"/{username}/".join(my_url.rsplit('/', 1))
+        future.html_url = html_url
+        futures.append(future)
+    
+    for future in as_completed(futures):
+        res = future.result()
+        _gists.append((res.text, future.html_url))
 
+    matching_gists = [html_url for _gist, html_url in _gists if re.search(pattern, _gist)]
     result['status'] = 'success'
     result['username'] = username
     result['pattern'] = pattern
-    result['matches'] = []
+    result['matches'] = matching_gists
 
     return jsonify(result)
 
