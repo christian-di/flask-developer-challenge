@@ -8,6 +8,7 @@ module implements a Flask server exposing two endpoints: a simple ping
 endpoint to verify the server is up and responding and a search endpoint
 providing a search across all public Gists for a given Github account.
 """
+import re
 
 import requests
 from flask import Flask, jsonify, request
@@ -41,7 +42,9 @@ def gists_for_user(username):
             username=username)
     response = requests.get(gists_url)
     # BONUS: What failures could happen?
+    # Network failure can occur, username may not exist, api may deprecate
     # BONUS: Paging? How does this work for users with tons of gists?
+    # Paging can be use optimize the memory in conjunction with yield
 
     return response.json()
 
@@ -60,6 +63,7 @@ def search():
     """
     post_data = request.get_json()
     # BONUS: Validate the arguments?
+    # We can use marshmallow to serialize the post data for validation
 
     username = post_data['username']
     pattern = post_data['pattern']
@@ -67,17 +71,25 @@ def search():
     result = {}
     gists = gists_for_user(username)
     # BONUS: Handle invalid users?
-
+    # raise 404 for invalid users by checking status of the response
+    session = requests.Session()
+    matches = []
     for gist in gists:
         # REQUIRED: Fetch each gist and check for the pattern
+        for file in gist['files'].values():
+            gist_content = session.get(file['raw_url']).text
+            if re.search(pattern, gist_content):
+                matches.append('https://gist.github.com/{username}/{gist_id}'.format(
+                    username=username, gist_id=gist['id']))
         # BONUS: What about huge gists?
+        # As per documentation, truncate key can be used to identify such cases and handle them accordingly
         # BONUS: Can we cache results in a datastore/db?
-        pass
+        # Yes, we can use the gist updated_at to invalidate cache
 
     result['status'] = 'success'
     result['username'] = username
     result['pattern'] = pattern
-    result['matches'] = []
+    result['matches'] = matches
 
     return jsonify(result)
 
