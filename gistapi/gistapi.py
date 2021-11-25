@@ -3,17 +3,19 @@
 Exposes a simple HTTP API to search a users Gists via a regular expression.
 
 Github provides the Gist service as a pastebin analog for sharing code and
-other develpment artifacts.  See http://gist.github.com for details.  This
+other development artifacts.  See http://gist.github.com for details.  This
 module implements a Flask server exposing two endpoints: a simple ping
 endpoint to verify the server is up and responding and a search endpoint
 providing a search across all public Gists for a given Github account.
 """
+import logging
+import re
+from http import HTTPStatus
 
 import requests
 from flask import Flask, jsonify, request
+from werkzeug.exceptions import InternalServerError, BadRequest, NotFound
 
-
-# *The* app object
 app = Flask(__name__)
 
 
@@ -40,7 +42,10 @@ def gists_for_user(username):
     gists_url = 'https://api.github.com/users/{username}/gists'.format(
             username=username)
     response = requests.get(gists_url)
-    # BONUS: What failures could happen?
+    if response.status_code != HTTPStatus.OK:
+        logging.warning(f"Bad response got from git. Status Code {response.status_code}. Message {response.text}")
+        raise InternalServerError()
+
     # BONUS: Paging? How does this work for users with tons of gists?
 
     return response.json()
@@ -59,28 +64,59 @@ def search():
         indicating any failure conditions.
     """
     post_data = request.get_json()
-    # BONUS: Validate the arguments?
+    username = post_data.get('username')
+    pattern = post_data.get('pattern')
 
-    username = post_data['username']
-    pattern = post_data['pattern']
+    validate_query_params(pattern, username)
+    validate_username_on_github(username)
 
-    result = {}
+    matches = find_matches(pattern, username)
+
+    return jsonify({
+        'status': 'success' if matches else 'not found',
+        'username': username,
+        'pattern': pattern,
+        'matches': matches
+    })
+
+
+def find_matches(pattern, username):
     gists = gists_for_user(username)
-    # BONUS: Handle invalid users?
-
+    pattern_regex = re.compile(pattern)
+    matches = []
     for gist in gists:
-        # REQUIRED: Fetch each gist and check for the pattern
-        # BONUS: What about huge gists?
+        if gist_matches(gist, pattern_regex):
+            matches.append(f"https://gist.github.com/{username}/{gist['id']}")
         # BONUS: Can we cache results in a datastore/db?
-        pass
+    return matches
 
-    result['status'] = 'success'
-    result['username'] = username
-    result['pattern'] = pattern
-    result['matches'] = []
 
-    return jsonify(result)
+def validate_username_on_github(username):
+    github_user = requests.get(f'https://api.github.com/users/{username}')
+    if github_user.status_code != HTTPStatus.OK:
+        raise NotFound(f"Username {username} not found")
+
+
+def validate_query_params(pattern, username):
+    # Todo add proper library to have a more robust validation
+    if not username or not pattern:
+        raise BadRequest("Username or pattern not specified")
+    if not re.match(r'^[A-Za-z-]*$', username):
+        raise BadRequest("Username has a wrong format")
+
+
+def gist_matches(gist, pattern_regex):
+    result = False
+    for file in gist.get('files').keys():
+        text = requests.get(gist['files'][file]['raw_url'])
+        if pattern_regex.match(text.text):
+            result = True
+            break
+    return result
 
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=9876)
+
+
+__all__ = ["app"]
