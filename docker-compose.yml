@@ -3,4 +3,4 @@ web:
   build: .
   ports:
     - 8000:8000
-  command: python -m gistapi.gistapi
+  command: python -m app.gistapi.gistapi

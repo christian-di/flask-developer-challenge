@@ -12,4 +12,4 @@ RUN apt-get update \
 COPY . /app
 
 EXPOSE 8000
-ENTRYPOINT ["gunicorn", "--bind", ":8000", "gistapi.gistapi:app"]
+ENTRYPOINT ["gunicorn", "--bind", ":8000", "app.gistapi.gistapi:app"]
